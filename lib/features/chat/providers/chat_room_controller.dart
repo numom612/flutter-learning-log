@@ -52,33 +52,50 @@ class ChatRoomController
   StreamSubscription<List<MessageModel>>? _subscription;
 
   @override
-  Future<ChatRoomState> build(String arg) async {
-    _roomId = arg;
+ Future<ChatRoomState> build(String arg) async {
+  _roomId = arg;
 
-    final local = await _guard(() => _repo.fetchLocalMessages(_roomId, null));
+  // 1. ローカルメッセージの取得（初期値用）
+  final local = await _guard(() => _repo.fetchLocalMessages(_roomId, null));
 
-    _subscription?.cancel();
-    _subscription = _repo.streamMessages(_roomId).listen((remote) {
-      final currentState = state.valueOrNull ?? const ChatRoomState();
+  // 2. サブスクリプションの管理
+  _subscription?.cancel();
+  _subscription = _repo.streamMessages(_roomId).listen(
+    (remote) {
+      final currentState = state.valueOrNull ?? ChatRoomState(messages: local);
+
+      // 3. 既存メッセージのうちremoteに含まれないものを抽出（cursorで重複判定）
+      final oldWithoutRemote = currentState.messages
+          .where((old) => !remote.any((r) => old.cursor == r.cursor))
+          .toList();
+
+      // 4. remote（新着）＋ oldWithoutRemote（既存）を統合（時系列降順ならremote先頭）
+      final merged = [...remote, ...oldWithoutRemote];
+
+      // 5. 状態を更新
       state = AsyncData(
         currentState.copyWith(
-          messages: remote,
-          lastCursor: remote.isEmpty ? null : remote.last.cursor,
+          messages: merged,
+          lastCursor: merged.isEmpty ? null : merged.last.cursor,
         ),
       );
-    }, onError: (e, st) {
+    },
+    onError: (e, st) {
       _updateStatus(NetError(e, st));
-    });
+    },
+  );
 
-    ref.onDispose(() {
-      _subscription?.cancel();
-    });
+  // 6. サブスクリプションの破棄を自動管理
+  ref.onDispose(() {
+    _subscription?.cancel();
+  });
 
-    return ChatRoomState(
-      messages: local,
-      lastCursor: local.isEmpty ? null : local.last.cursor,
-    );
-  }
+  // 7. 初期値としてローカルのみでState返却
+  return ChatRoomState(
+    messages: local,
+    lastCursor: local.isEmpty ? null : local.last.cursor,
+  );
+}
 
   Future<void> fetchMore() async {
     final current = state.valueOrNull;
